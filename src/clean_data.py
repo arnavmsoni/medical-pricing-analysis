@@ -1,59 +1,81 @@
-import pandas as pd 
+from pathlib import Path
+import pandas as pd
 
-#importing henderson csv file 
-df_hend = pd.read_csv("../data/raw/Henderson1.csv")
-print(df_hend.head)
+SCRIPT_DIR  = Path(__file__).parent
+PROJECT_DIR = SCRIPT_DIR.parent
+RAW_DIR      = PROJECT_DIR / "data" / "raw"
+CLEAN_DIR    = PROJECT_DIR / "data" / "cleaned"
+CLEAN_DIR.mkdir(parents=True, exist_ok=True)
 
-# Convert percentage and charge columns to numeric (ignoring errors like $ or % symbols)
-df_hend["standard_charge|gross"] = pd.to_numeric(df_hend["standard_charge|gross"], errors='coerce')
+def process_hospital(filename):
+    file_path = RAW_DIR / filename
+    print(f"\nLoading {file_path}")
 
-# Group by description and compute the averages
-summary_df = df_hend.groupby("description", as_index=False).agg({
-    "standard_charge|gross": "mean"
-})
+    header_row = None
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        for i, line in enumerate(f):
+            if line.lower().startswith("description,"):
+                header_row = i
+                break
+    if header_row is None:
+        raise RuntimeError(f"Could not find header row in {file_path}")
 
-# Rename columns for clarity
-summary_df = summary_df.rename(columns={
-    "standard_charge|gross": "avg_gross_charge"
-})
+    df = pd.read_csv(
+        file_path,
+        header=header_row,
+        dtype=str,
+        na_values=["", "NA"]
+    )
 
-# Preview
-print(summary_df.head(1000))
-summary_df.info()
+    df.columns = (
+        df.columns
+          .str.strip()
+          .str.lower()
+          .str.replace(r"\s+", "_", regex=True)
+    )
+    print("Columns found:", df.columns.tolist())
 
-#importing mccook csv file 
-df_mc = pd.read_csv("../data/raw/McCook1.csv")
-print(df_mc.head)
+    gross_cols = [c for c in df.columns if "gross" in c]
+    if not gross_cols:
+        raise RuntimeError("No column with 'gross' in its name!")
+    gross_col = gross_cols[0]
+    print(f"→ using '{gross_col}' as the gross charge column")
 
-# Convert percentage and charge columns to numeric (ignoring errors like $ or % symbols)
-df_mc["standard_charge|gross"] = pd.to_numeric(df_mc["standard_charge|gross"], errors='coerce')
+    df[gross_col] = (
+        df[gross_col]
+          .str.replace(r"[\$,]", "", regex=True)
+          .astype(float)
+    )
 
-# Group by description and compute the averages
-summary_df_mc = df_mc.groupby("description", as_index=False).agg({
-    "standard_charge|gross": "mean"
-})
+    summary = (
+        df
+        .dropna(subset=[gross_col])
+        .groupby("description", as_index=False)
+        .agg(avg_gross_charge=(gross_col, "mean"))
+    )
+    print(summary.head(), "\n")
+    summary.info()
+    return summary
 
-# Rename columns for clarity
-summary_df_mc = summary_df_mc.rename(columns={
-    "standard_charge|gross": "avg_gross_charge"
-})
+summary_hend = process_hospital("Henderson1.csv")
+summary_mc   = process_hospital("McCook1.csv")
 
-# Preview
-print(summary_df_mc.head(1000))
-summary_df_mc.info()
+def clean_desc(s):
+    return "" if pd.isna(s) else " ".join(s.lower().split())
 
+for df in (summary_hend, summary_mc):
+    df["description_clean"] = df["description"].apply(clean_desc)
 
-def clean_desc(desc):
-    if pd.isna(desc):
-        return ""
-    return " ".join(desc.lower().strip().split())
+merged = pd.merge(
+    summary_hend,
+    summary_mc,
+    on="description_clean",
+    how="inner",
+    suffixes=("_hend", "_mc")
+)
 
-summary_df['description_clean'] = summary_df['description'].apply(clean_desc)
-summary_df_mc['description_clean'] = summary_df_mc['description'].apply(clean_desc)
+summary_hend.to_csv(CLEAN_DIR / "cleaned_data_hend.csv", index=False)
+summary_mc  .to_csv(CLEAN_DIR / "cleaned_data_mc.csv",   index=False)
+merged      .to_csv(CLEAN_DIR / "cleaned_data.csv",      index=False)
 
-merged_df = pd.merge(summary_df, summary_df_mc, on='description_clean')
-merged_df.to_csv("../data/cleaned/cleaned_data.csv", index=False)
-
-# each individual 
-summary_df_mc.to_csv("../data/cleaned/cleaned_data_mc.csv", index=False)
-summary_df.to_csv("../data/cleaned/cleaned_data_hend.csv" , index=False)
+print(f"\nAll cleaned files written to {CLEAN_DIR}")
